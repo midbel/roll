@@ -4,9 +4,7 @@ import (
 	"bufio"
 	"fmt"
 	"io"
-	"log"
 	"os"
-	"os/signal"
 	"path/filepath"
 	"sync"
 	"time"
@@ -102,13 +100,10 @@ func (w *writer) rotate() {
 	for i := 1; ; i++ {
 		select {
 		case n := <-w.timer.C:
-			log.Println("rotate: timeout")
 			w.rotateFile(i, n, true)
 		case n := <-w.ticker.C:
-			log.Println("rotate: rotation")
 			w.rotateFile(i, n, false)
 		case n := <-w.exceed:
-			log.Println("rotate: written")
 			w.written += int64(n)
 			if w.limit > 0 && w.written >= w.limit {
 				w.rotateFile(i, time.Now(), false)
@@ -123,7 +118,6 @@ func (w *writer) rotateFile(i int, n time.Time, expired bool) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
-	log.Println("rotate file")
 	if !expired {
 		if !w.timer.Stop() {
 			<-w.timer.C
@@ -142,13 +136,10 @@ func (w *writer) rotateFile(i int, n time.Time, expired bool) error {
 func (w *writer) flushAndClose() error {
 	err := w.writer.Flush()
 	if err := w.file.Close(); err != nil {
-		log.Println("closing file error:", err)
 		return err
 	}
-	log.Println("close", w.file.Name())
 	if !w.keepEmpty && w.written == 0 {
 		os.Remove(w.file.Name())
-		log.Println("remove", w.file.Name())
 	}
 	w.written = 0
 	return err
@@ -172,6 +163,5 @@ func (w *writer) createFile(i int, n time.Time) error {
 	} else {
 		w.writer.Reset(w.file)
 	}
-	log.Println("create", w.file.Name())
 	return nil
 }
