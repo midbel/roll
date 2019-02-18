@@ -31,6 +31,7 @@ type writer struct {
 	file    *os.File
 	writer  *bufio.Writer
 	written int64
+	err     error
 
 	ticker *time.Ticker
 	timer  *time.Timer
@@ -80,6 +81,9 @@ func Writer(d string, o Options) (io.WriteCloser, error) {
 }
 
 func (w *writer) Write(bs []byte) (int, error) {
+	if w.err != nil {
+		return 0, w.err
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
@@ -98,38 +102,45 @@ func (w *writer) Close() error {
 func (w *writer) rotate() {
 	// iter := 1
 	for i := 1; ; i++ {
+		var (
+			expired bool
+			err error
+		)
 		select {
 		case n := <-w.timer.C:
-			w.rotateFile(i, n, true)
+			err = w.rotateFile(i, n)
+			expired = true
 		case n := <-w.ticker.C:
-			w.rotateFile(i, n, false)
+			err = w.rotateFile(i, n)
 		case n := <-w.exceed:
 			w.written += int64(n)
 			if w.limit > 0 && w.written >= w.limit {
-				w.rotateFile(i, time.Now(), false)
+				err = w.rotateFile(i, time.Now())
 			} else {
 				i--
 			}
 		}
+		if !expired {
+			if !w.timer.Stop() {
+				<-w.timer.C
+			}
+		}
+		w.timer.Reset(w.timeout)
+		if err != nil {
+			w.err = err
+		}
 	}
 }
 
-func (w *writer) rotateFile(i int, n time.Time, expired bool) error {
+func (w *writer) rotateFile(i int, n time.Time) error {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-
-	if !expired {
-		if !w.timer.Stop() {
-			<-w.timer.C
-		}
-	}
 
 	err := w.flushAndClose()
 	if err := w.createFile(i, n); err != nil {
 		return err
 	}
 
-	w.timer.Reset(w.timeout)
 	return err
 }
 
