@@ -85,9 +85,9 @@ func (w *writer) Write(bs []byte) (int, error) {
 		return 0, w.err
 	}
 	w.mu.Lock()
-	defer w.mu.Unlock()
-
 	n, err := w.writer.Write(bs)
+	w.mu.Unlock()
+
 	if err == nil {
 		w.exceed <- n
 	}
