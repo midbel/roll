@@ -89,7 +89,9 @@ func (w *writer) Write(bs []byte) (int, error) {
 	w.mu.Unlock()
 
 	if err == nil {
-		w.exceed <- n
+		go func(n int) {
+			w.exceed <- n
+		}(n)
 	}
 	return n, err
 }
