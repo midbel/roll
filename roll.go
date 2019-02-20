@@ -100,3 +100,40 @@ func checkOptions(d string, o *Options) error {
 func next(i int, n time.Time) (string, error) {
 	return fmt.Sprintf("file-%06d-%d.bin", i, n.Unix()), nil
 }
+
+type roller struct {
+	next     NextFunc
+	limit    int64
+	interval time.Duration
+	timeout  time.Duration
+
+	mu      sync.Mutex
+	inner io.WriteCloser
+	written int64
+	err     error
+
+	ticker *time.Ticker
+	timer  *time.Timer
+	exceed chan int
+}
+
+func (r *roller) Write(bs []byte) (int, error) {
+	if r.err != nil {
+		return r.err
+	}
+	r.mu.Lock()
+	n, err := r.inner.Write(bs)
+	r.mu.Unlock()
+
+	if err == nil {
+		r.exceed <- n
+	}
+	return n, err
+}
+
+func (r *roller) Close() error {
+	if r.err != nil {
+		return r.err
+	}
+	return r.inner.Close()
+}
