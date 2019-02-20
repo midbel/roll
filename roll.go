@@ -1,37 +1,61 @@
 package roll
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"os"
 	"time"
 )
 
+const (
+	DefaultInterval = time.Minute
+	DefaultTimeout  = DefaultInterval + time.Second
+)
+
+var MaxSize = 64 << 10
+
 type Options struct {
 	Timeout   time.Duration
 	Interval  time.Duration
 	MaxSize   int
 	KeepEmpty bool
-	Next      func(int, time.Time) (string, error)
+	Next      NextFunc
 }
 
-func Buffer(d string) (io.WriteCloser, error) {
-	return nil, nil
+type NextFunc func(int, time.Time) (string, error)
+
+func Buffer(d string, o Options) (io.WriteCloser, error) {
+	if err := checkOptions(d, &o); err != nil {
+		return nil, err
+	}
+	if o.MaxSize <= 0 {
+		o.MaxSize = MaxSize
+	}
+	w := buffer{
+		datadir:  d,
+		interval: o.Interval,
+		timeout:  o.Timeout,
+		limit:    o.MaxSize,
+		timer:    time.NewTimer(o.Timeout),
+		ticker:   time.NewTicker(o.Interval),
+		exceed:   make(chan int),
+	}
+	w.prime = bytes.NewBuffer(make([]byte, o.MaxSize))
+	w.spare = bytes.NewBuffer(make([]byte, o.MaxSize))
+	if o.Next == nil {
+		w.next = next
+	} else {
+		w.next = o.Next
+	}
+	go w.rotate()
+
+	return &w, nil
 }
 
 func File(d string, o Options) (io.WriteCloser, error) {
-	i, err := os.Stat(d)
-	if err != nil {
+	if err := checkOptions(d, &o); err != nil {
 		return nil, err
-	}
-	if !i.IsDir() {
-		return nil, fmt.Errorf("%s not a directory", d)
-	}
-	if o.Interval == 0 {
-		o.Interval = time.Minute
-	}
-	if o.Timeout == 0 {
-		o.Timeout = o.Interval + time.Second
 	}
 	w := writer{
 		datadir:   d,
@@ -57,6 +81,23 @@ func File(d string, o Options) (io.WriteCloser, error) {
 	go w.rotate()
 
 	return &w, nil
+}
+
+func checkOptions(d string, o *Options) error {
+	i, err := os.Stat(d)
+	if err != nil {
+		return err
+	}
+	if !i.IsDir() {
+		return fmt.Errorf("%s not a directory", d)
+	}
+	if o.Interval == 0 {
+		o.Interval = DefaultInterval
+	}
+	if o.Timeout == 0 {
+		o.Timeout = DefaultTimeout
+	}
+	return nil
 }
 
 func next(i int, n time.Time) (string, error) {

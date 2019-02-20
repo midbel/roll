@@ -1,11 +1,11 @@
 package roll
 
 import (
-  "bufio"
-  "os"
-  "path/filepath"
-  "sync"
-  "time"
+	"bufio"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
 )
 
 type writer struct {
@@ -54,7 +54,6 @@ func (w *writer) rotate() {
 	for i := 1; ; i++ {
 		var (
 			expired bool
-			err     error
 			now     time.Time
 		)
 		select {
@@ -77,9 +76,6 @@ func (w *writer) rotate() {
 			}
 		}
 		w.timer.Reset(w.timeout)
-		if err != nil {
-			w.err = err
-		}
 	}
 }
 
