@@ -17,8 +17,8 @@ type buffer struct {
 	timeout  time.Duration
 
 	mu    sync.Mutex
-	prime *bytes.Buffer
-	spare *bytes.Buffer
+	prime bytes.Buffer
+	spare bytes.Buffer
 	err   error
 
 	ticker *time.Ticker
@@ -34,9 +34,9 @@ func (b *buffer) Write(bs []byte) (int, error) {
 	b.mu.Unlock()
 
 	if err == nil {
-		go func(n int) {
-			b.exceed <- n
-		}(n)
+    b.exceed <- n
+		// go func(n int) {
+		// }(n)
 	}
 	return n, err
 }
@@ -81,10 +81,10 @@ func (b *buffer) rotateFile(i int, n time.Time) error {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
-	b.prime, b.spare = b.spare, b.prime
-	if b.spare.Len() == 0 {
+	if b.prime.Len() == 0 {
 		return nil
 	}
+  b.prime, b.spare = b.spare, b.prime
 	return b.flushAndClose(i, n)
 }
 

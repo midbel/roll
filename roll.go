@@ -1,7 +1,6 @@
 package roll
 
 import (
-	"bytes"
 	"fmt"
 	"io"
 	"os"
@@ -41,8 +40,6 @@ func Buffer(d string, o Options) (io.WriteCloser, error) {
 		ticker:   time.NewTicker(o.Interval),
 		exceed:   make(chan int),
 	}
-	w.prime = bytes.NewBuffer(make([]byte, o.MaxSize))
-	w.spare = bytes.NewBuffer(make([]byte, o.MaxSize))
 	if o.Next == nil {
 		w.next = next
 	} else {
