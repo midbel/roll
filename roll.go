@@ -5,6 +5,7 @@ import (
 	"io"
 	"os"
 	"time"
+	"sync"
 )
 
 const (
@@ -119,7 +120,7 @@ type roller struct {
 
 func (r *roller) Write(bs []byte) (int, error) {
 	if r.err != nil {
-		return r.err
+		return 0, r.err
 	}
 	r.mu.Lock()
 	n, err := r.inner.Write(bs)
