@@ -106,22 +106,23 @@ func (w *writer) rotate() {
 	for i := 1; ; i++ {
 		var (
 			expired bool
-			err error
+			err     error
+			now     time.Time
 		)
 		select {
 		case n := <-w.timer.C:
-			err = w.rotateFile(i, n)
-			expired = true
+			now, expired = n, true
 		case n := <-w.ticker.C:
-			err = w.rotateFile(i, n)
+			now = n
 		case n := <-w.exceed:
 			w.written += int64(n)
 			if w.limit > 0 && w.written >= w.limit {
-				err = w.rotateFile(i, time.Now())
+				now = time.Now()
 			} else {
 				i--
 			}
 		}
+		w.err = w.rotateFile(i, now)
 		if !expired {
 			if !w.timer.Stop() {
 				<-w.timer.C
@@ -135,6 +136,9 @@ func (w *writer) rotate() {
 }
 
 func (w *writer) rotateFile(i int, n time.Time) error {
+	if n.IsZero() {
+		return nil
+	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 
