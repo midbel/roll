@@ -4,8 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"time"
 	"sync"
+	"time"
 )
 
 const (
@@ -40,11 +40,7 @@ func Buffer(d string, o Options) (io.WriteCloser, error) {
 		timer:    time.NewTimer(o.Timeout),
 		ticker:   time.NewTicker(o.Interval),
 		exceed:   make(chan int),
-	}
-	if o.Next == nil {
-		w.next = next
-	} else {
-		w.next = o.Next
+		next:     o.Next,
 	}
 	go w.rotate()
 
@@ -64,14 +60,10 @@ func File(d string, o Options) (io.WriteCloser, error) {
 		limit:     -1,
 		exceed:    make(chan int),
 		keepEmpty: o.KeepEmpty,
+		next:      o.Next,
 	}
 	if o.MaxSize > 0 {
 		w.limit = int64(o.MaxSize)
-	}
-	if o.Next == nil {
-		w.next = next
-	} else {
-		w.next = o.Next
 	}
 	if err := w.createFile(0, time.Now()); err != nil {
 		return nil, err
@@ -95,6 +87,9 @@ func checkOptions(d string, o *Options) error {
 	if o.Timeout == 0 {
 		o.Timeout = DefaultTimeout
 	}
+	if o.Next == nil {
+		o.Next = next
+	}
 	return nil
 }
 
@@ -109,7 +104,7 @@ type roller struct {
 	timeout  time.Duration
 
 	mu      sync.Mutex
-	inner io.WriteCloser
+	inner   io.WriteCloser
 	written int64
 	err     error
 

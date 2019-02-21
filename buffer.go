@@ -34,7 +34,7 @@ func (b *buffer) Write(bs []byte) (int, error) {
 	b.mu.Unlock()
 
 	if err == nil {
-    b.exceed <- n
+		b.exceed <- n
 		// go func(n int) {
 		// }(n)
 	}
@@ -84,7 +84,7 @@ func (b *buffer) rotateFile(i int, n time.Time) error {
 	if b.prime.Len() == 0 {
 		return nil
 	}
-  b.prime, b.spare = b.spare, b.prime
+	b.prime, b.spare = b.spare, b.prime
 	return b.flushAndClose(i, n)
 }
 
