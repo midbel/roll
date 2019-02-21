@@ -20,6 +20,9 @@ type Header struct {
 }
 
 func (h Header) tarHeader() *tar.Header {
+	if h.ModTime.IsZero() {
+		h.ModTime = time.Now()
+	}
 	return &tar.Header{
 		Name:    h.Name,
 		Size:    h.Size,
@@ -27,6 +30,9 @@ func (h Header) tarHeader() *tar.Header {
 		Uid:     h.Uid,
 		Gid:     h.Gid,
 		ModTime: h.ModTime,
+		AccessTime: h.ModTime,
+		ChangeTime: h.ModTime,
+		Format:  tar.FormatGNU,
 	}
 }
 
@@ -125,6 +131,7 @@ func (t *Tarball) rotateFile(i int, n time.Time) error {
 	}
 	t.mu.Lock()
 	defer t.mu.Unlock()
+	t.written = 0
 
 	if t.buffer.Len() > 0 {
 		if err := t.flushAndClose(i, n); err != nil {
@@ -133,7 +140,6 @@ func (t *Tarball) rotateFile(i int, n time.Time) error {
 	}
 	t.buffer.Reset()
 	t.writer = tar.NewWriter(&t.buffer)
-	t.written = 0
 	return nil
 }
 
