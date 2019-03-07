@@ -24,15 +24,15 @@ func (h Header) tarHeader() *tar.Header {
 		h.ModTime = time.Now()
 	}
 	return &tar.Header{
-		Name:    h.Name,
-		Size:    h.Size,
-		Mode:    h.Mode,
-		Uid:     h.Uid,
-		Gid:     h.Gid,
-		ModTime: h.ModTime,
+		Name:       h.Name,
+		Size:       h.Size,
+		Mode:       h.Mode,
+		Uid:        h.Uid,
+		Gid:        h.Gid,
+		ModTime:    h.ModTime,
 		AccessTime: h.ModTime,
 		ChangeTime: h.ModTime,
-		Format:  tar.FormatGNU,
+		Format:     tar.FormatGNU,
 	}
 }
 
