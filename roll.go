@@ -3,133 +3,198 @@ package roll
 import (
 	"fmt"
 	"io"
+	"log"
 	"os"
 	"sync"
 	"time"
 )
 
-const (
-	DefaultInterval = time.Minute
-	DefaultTimeout  = DefaultInterval + time.Second
-)
+type roller struct {
+	writer io.WriteCloser
+	open   NextFunc
+	last   int
+	once   sync.Once
 
-var MaxSize = 64 << 10
+	done    chan struct{}
+	sema    chan struct{}
+	written chan int
+	roll    chan time.Time
+	reset   chan time.Time
+}
 
 type Options struct {
+	Open      NextFunc
 	Timeout   time.Duration
 	Interval  time.Duration
 	MaxSize   int
+	MaxCount  int
+	Wait      bool
 	KeepEmpty bool
-	Next      NextFunc
 }
 
-type NextFunc func(int, time.Time) (string, error)
+var sentinel = struct{}{}
 
-func Buffer(d string, o Options) (io.WriteCloser, error) {
-	if err := checkOptions(d, &o); err != nil {
-		return nil, err
-	}
-	if o.MaxSize <= 0 {
-		o.MaxSize = MaxSize
-	}
-	w := buffer{
-		datadir:  d,
-		interval: o.Interval,
-		timeout:  o.Timeout,
-		limit:    o.MaxSize,
-		timer:    time.NewTimer(o.Timeout),
-		ticker:   time.NewTicker(o.Interval),
-		exceed:   make(chan int),
-		next:     o.Next,
-	}
-	go w.rotate()
+type NextFunc func(int, time.Time) (io.WriteCloser, error)
 
-	return &w, nil
-}
-
-func File(d string, o Options) (io.WriteCloser, error) {
-	if err := checkOptions(d, &o); err != nil {
-		return nil, err
+func Roll(o Options) (io.WriteCloser, error) {
+	r := roller{
+		open:    o.Open,
+		written: make(chan int),
+		roll:    make(chan time.Time, 1),
+		reset:   make(chan time.Time, 1),
+		sema:    make(chan struct{}, 1),
+		done:    make(chan struct{}),
 	}
-	w := writer{
-		datadir:   d,
-		interval:  o.Interval,
-		timeout:   o.Timeout,
-		timer:     time.NewTimer(o.Timeout),
-		ticker:    time.NewTicker(o.Interval),
-		limit:     -1,
-		exceed:    make(chan int),
-		keepEmpty: o.KeepEmpty,
-		next:      o.Next,
+	go r.run(o)
+	if o.Wait {
+		r.Rotate()
+	} else {
+		wc, err := r.open(1, time.Now())
+		if err != nil {
+			return nil, err
+		}
+		r.writer = wc
 	}
-	if o.MaxSize > 0 {
-		w.limit = int64(o.MaxSize)
-	}
-	if err := w.createFile(0, time.Now()); err != nil {
-		return nil, err
-	}
-	go w.rotate()
-
-	return &w, nil
-}
-
-func checkOptions(d string, o *Options) error {
-	i, err := os.Stat(d)
-	if err != nil {
-		return err
-	}
-	if !i.IsDir() {
-		return fmt.Errorf("%s not a directory", d)
-	}
-	if o.Interval == 0 {
-		o.Interval = DefaultInterval
-	}
-	if o.Timeout == 0 {
-		o.Timeout = DefaultTimeout
-	}
-	if o.Next == nil {
-		o.Next = next
-	}
-	return nil
-}
-
-func next(i int, n time.Time) (string, error) {
-	return fmt.Sprintf("file-%06d-%d.bin", i, n.Unix()), nil
-}
-
-type roller struct {
-	next     NextFunc
-	limit    int64
-	interval time.Duration
-	timeout  time.Duration
-
-	mu      sync.Mutex
-	inner   io.WriteCloser
-	written int64
-	err     error
-
-	ticker *time.Ticker
-	timer  *time.Timer
-	exceed chan int
+	return &r, nil
 }
 
 func (r *roller) Write(bs []byte) (int, error) {
-	if r.err != nil {
-		return 0, r.err
+	select {
+	case n := <-r.roll:
+		n = drainRoll(r.roll, n)
+		if n.IsZero() {
+			n = time.Now()
+		}
+		r.last++
+		w, err := r.open(r.last, n)
+		if err != nil {
+			return 0, err
+		}
+		r.writer = w
+	default:
 	}
-	r.mu.Lock()
-	n, err := r.inner.Write(bs)
-	r.mu.Unlock()
-
+	r.acquire()
+	defer r.release()
+	n, err := r.writer.Write(bs)
 	if err == nil {
-		r.exceed <- n
+		go func() {
+			r.written <- n
+		}()
 	}
 	return n, err
 }
 
 func (r *roller) Close() error {
-	if r.err != nil {
-		return r.err
+	var (
+		closed bool
+		err    error
+	)
+	r.once.Do(func() {
+		close(r.done)
+		err = r.closeWriter(r.writer)
+		closed = true
+	})
+	if closed {
+		return err
 	}
-	return r.inner.Close()
+	return fmt.Errorf("roller already closed")
+}
+
+func (r *roller) Rotate() {
+	r.reset <- time.Now()
+}
+
+func (r *roller) run(o Options) {
+	var (
+		interval, timeout <-chan time.Time
+		timer             *time.Timer
+	)
+	if o.Interval > 0 {
+		t := time.NewTicker(o.Interval)
+		interval = t.C
+		defer t.Stop()
+	}
+	if o.Timeout > 0 {
+		timer = time.NewTimer(o.Timeout)
+		timeout = timer.C
+		defer timer.Stop()
+	}
+	logger := log.New(os.Stdout, "[rotate] ", 0)
+	// last := time.Now()
+
+	var written, count int
+	for {
+		var (
+			now     time.Time
+			expired bool
+			reset   bool
+		)
+		select {
+		case <-r.done:
+			return
+		case n := <-timeout:
+			// if n.Sub(last) < o.Timeout {
+			//   continue
+			// }
+			expired = true
+			logger.Printf("timeout rotation @%s", n.Format("2006-01-02 15:04:05"))
+		case n := <-interval:
+			now, reset = n, true
+			logger.Printf("automatic rotation @%s", n.Format("2006-01-02 15:04:05"))
+		case n := <-r.reset:
+			now, reset = n, true
+		case n := <-r.written:
+			if n > 0 {
+				count++
+				written += n
+			}
+			if (o.MaxCount > 0 && count >= o.MaxCount) || (o.MaxSize > 0 && written > o.MaxSize) {
+				now = time.Now()
+				logger.Printf("threshold rotation @%s (%d - %d)", now.Format("2006-01-02 15:04:05"), written, count)
+			}
+		}
+		if !now.IsZero() || expired {
+			if written > 0 || reset {
+				select {
+				case r.roll <- now:
+				default:
+					<-r.roll
+					r.roll <- now
+				}
+
+				r.closeWriter(r.writer)
+			}
+			written, count = 0, 0
+		}
+		if o.Timeout > 0 {
+			timer.Reset(o.Timeout)
+		}
+	}
+}
+
+func (r *roller) closeWriter(old io.Closer) error {
+	if old == nil {
+		return nil
+	}
+	r.acquire()
+	defer r.release()
+	if f, ok := old.(interface{ Flush() error }); ok {
+		f.Flush()
+	}
+	return old.Close()
+}
+
+func (r *roller) acquire() { r.sema <- sentinel }
+func (r *roller) release() { <-r.sema }
+
+func drainRoll(roll <-chan time.Time, n time.Time) time.Time {
+	for {
+		select {
+		case w := <-roll:
+			n = w
+		default:
+			return n
+		}
+	}
+	return n
 }
