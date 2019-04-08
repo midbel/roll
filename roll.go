@@ -8,6 +8,10 @@ import (
 	"os"
 	"sync"
 	"time"
+
+	"github.com/midbel/tape"
+	"github.com/midbel/tape/ar"
+	"github.com/midbel/tape/cpio"
 )
 
 type Header struct {
@@ -29,6 +33,16 @@ func (h Header) Tar() tar.Header {
 		Mode:    h.Mode,
 		Uid:     h.Owner,
 		Gid:     h.Group,
+	}
+}
+
+func (h Header) Tape() tape.Header {
+	return tape.Header{
+		Filename: h.File,
+		ModTime:  h.ModTime,
+		Uid:      int64(h.Owner),
+		Gid:      int64(h.Group),
+		Mode:     h.Mode,
 	}
 }
 
@@ -127,6 +141,14 @@ func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
 		case *tar.Writer:
 			hdr := h.Tar()
 			hdr.Size = int64(len(bs))
+			err = w.WriteHeader(&hdr)
+		case *cpio.Writer:
+			hdr := h.Tape()
+			hdr.Length = int64(len(bs))
+			err = w.WriteHeader(&hdr)
+		case *ar.Writer:
+			hdr := h.Tape()
+			hdr.Length = int64(len(bs))
 			err = w.WriteHeader(&hdr)
 		default:
 		}
