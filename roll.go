@@ -1,6 +1,7 @@
 package roll
 
 import (
+	"archive/tar"
 	"fmt"
 	"io"
 	"log"
@@ -9,32 +10,52 @@ import (
 	"time"
 )
 
+type Header struct {
+	File    string
+	ModTime time.Time
+	Owner   int
+	Group   int
+	Mode    int64
+}
+
+func (h Header) isZero() bool {
+	return h.File == "" && h.ModTime.IsZero()
+}
+
+func (h Header) Tar() tar.Header {
+	return tar.Header{
+		Name:    h.File,
+		ModTime: h.ModTime,
+		Mode:    h.Mode,
+		Uid:     h.Owner,
+		Gid:     h.Group,
+	}
+}
+
 type Roller struct {
-	writer io.WriteCloser
-	open   NextFunc
-	last   int
-	once   sync.Once
+	writer  io.WriteCloser
+	closers []io.Closer
+	open    NextFunc
+	last    int
+	once    sync.Once
 
 	done      chan struct{}
 	sema      chan struct{}
 	written   chan int
 	roll      chan time.Time
-	reset     chan time.Time
-	timeout   chan time.Time
-	interval  chan time.Time
-	threshold chan time.Time
+	reset     chan time.Time // manual rotation
+	timeout   chan time.Time // timeout rotation
+	interval  chan time.Time // automatic rotation
+	threshold chan time.Time // threshold (size, count) rotation
 	delay     time.Duration
-
-	// timeout  time.Duration
-	// timer    *time.Timer
-	// ticker   *time.Ticker
-	// maxSize  int
-	// maxCount int
 }
 
-var sentinel = struct{}{}
+var (
+	sentinel = struct{}{}
+	zero     = Header{}
+)
 
-type NextFunc func(int, time.Time) (io.WriteCloser, error)
+type NextFunc func(int, time.Time) (io.WriteCloser, []io.Closer, error)
 
 func WithTimeout(every time.Duration) func(*Roller) {
 	return func(r *Roller) {
@@ -78,31 +99,40 @@ func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
 	}
 	go r.run()
 
-	wc, err := r.open(r.last+1, time.Now())
+	wc, cs, err := r.open(r.last+1, time.Now())
 	if err != nil {
 		return nil, err
 	}
 	r.writer = wc
+	if len(cs) > 0 {
+		r.closers = append(r.closers[:0], cs...)
+	}
 	return &r, nil
 }
 
-func (r *Roller) Write(bs []byte) (int, error) {
-	select {
-	case n := <-r.roll:
-		n = drainRoll(r.roll, n)
-		if n.IsZero() {
-			n = time.Now()
+func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
+	if err := r.openNext(); err != nil {
+		return 0, err
+	}
+	if len(bs) == 0 {
+		return 0, nil
+	}
+
+	r.acquire()
+	defer r.release()
+	if !h.isZero() {
+		var err error
+		switch w := r.writer.(type) {
+		case *tar.Writer:
+			hdr := h.Tar()
+			hdr.Size = int64(len(bs))
+			err = w.WriteHeader(&hdr)
+		default:
 		}
-		r.last++
-		w, err := r.open(r.last, n)
 		if err != nil {
 			return 0, err
 		}
-		r.writer = w
-	default:
 	}
-	r.acquire()
-	defer r.release()
 	n, err := r.writer.Write(bs)
 	if err == nil {
 		go func() {
@@ -113,6 +143,10 @@ func (r *Roller) Write(bs []byte) (int, error) {
 		}()
 	}
 	return n, err
+}
+
+func (r *Roller) Write(bs []byte) (int, error) {
+	return r.WriteData(zero, bs)
 }
 
 func (r *Roller) Close() error {
@@ -135,6 +169,27 @@ func (r *Roller) Rotate() {
 	r.reset <- time.Now()
 }
 
+func (r *Roller) openNext() error {
+	select {
+	case n := <-r.roll:
+		n = drainRoll(r.roll, n)
+		if n.IsZero() {
+			n = time.Now()
+		}
+		r.last++
+		w, cs, err := r.open(r.last, n)
+		if err != nil {
+			return err
+		}
+		r.writer = w
+		if len(cs) > 0 {
+			r.closers = append(r.closers[:0], cs...)
+		}
+	default:
+	}
+	return nil
+}
+
 func (r *Roller) closeWriter(old io.Closer) error {
 	if old == nil {
 		return nil
@@ -144,7 +199,11 @@ func (r *Roller) closeWriter(old io.Closer) error {
 	if f, ok := old.(interface{ Flush() error }); ok {
 		f.Flush()
 	}
-	return old.Close()
+	err := old.Close()
+	for _, c := range r.closers {
+		c.Close()
+	}
+	return err
 }
 
 func (r *Roller) run() {
