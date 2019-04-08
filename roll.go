@@ -111,6 +111,9 @@ func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
 }
 
 func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
+	r.acquire()
+	defer r.release()
+
 	if err := r.openNext(); err != nil {
 		return 0, err
 	}
@@ -118,8 +121,6 @@ func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
 		return 0, nil
 	}
 
-	r.acquire()
-	defer r.release()
 	if !h.isZero() {
 		var err error
 		switch w := r.writer.(type) {
@@ -200,8 +201,11 @@ func (r *Roller) closeWriter(old io.Closer) error {
 		f.Flush()
 	}
 	err := old.Close()
-	for _, c := range r.closers {
-		c.Close()
+	for i := len(r.closers) - 1; i >= 0; i-- {
+		e := r.closers[i].Close()
+		if err == nil && e != nil {
+			err = e
+		}
 	}
 	return err
 }
