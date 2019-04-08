@@ -31,7 +31,11 @@ func main() {
 	interval := flag.Duration("d", 0, "interval")
 	flag.Parse()
 
-	next := open(flag.Arg(0), *dir, *mode, *prefix, *ext)
+	next, err := open(flag.Arg(0), *dir, *mode, *prefix, *ext)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(1)
+	}
 
 	options := []func(*roll.Roller){
 		roll.WithThreshold(*maxSize, *maxCount),
@@ -42,26 +46,22 @@ func main() {
 	w, err := roll.Roll(next, options...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
 	}
 	done := make(chan struct{}, 1)
 	go func() {
 		var r io.Reader = os.Stdin
 		if *tee {
-			r = io.TeeReader(os.Stdin, os.Stdout)
+			r = io.TeeReader(r, os.Stdout)
 		}
 		s := bufio.NewScanner(r)
-		s.Split(bufio.ScanLines)
 		for i := 1; s.Scan(); i++ {
 			t := s.Text()
-			if t == "" {
-				break
-			}
 			if _, err := io.WriteString(w, fmt.Sprintf("%d: %s\n", i, t)); err != nil {
-				fmt.Println(err)
+				fmt.Fprintln(os.Stderr, err)
 				break
 			}
 		}
-		fmt.Println("done:", s.Err())
 		close(done)
 	}()
 	sig := make(chan os.Signal, 1)
@@ -75,7 +75,10 @@ func main() {
 	w.Close()
 }
 
-func open(base, dir, mode, prefix, ext string) roll.NextFunc {
+func open(base, dir, mode, prefix, ext string) (roll.NextFunc, error) {
+	if err := os.MkdirAll(base, 0755); err != nil {
+		return nil, err
+	}
 	next := func(_ int, w time.Time) (io.WriteCloser, error) {
 		datadir := base
 		switch dir {
@@ -102,5 +105,5 @@ func open(base, dir, mode, prefix, ext string) roll.NextFunc {
 		log.Println("open file", filepath.Join(datadir, n))
 		return os.OpenFile(filepath.Join(datadir, n), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
 	}
-	return next
+	return next, nil
 }

@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"encoding/hex"
 	"flag"
 	"fmt"
 	"io"
@@ -10,8 +11,9 @@ import (
 )
 
 func main() {
+	bin := flag.Bool("b", false, "bin")
 	repeat := flag.Int("r", 0, "repeat")
-	length := flag.Int("n", 80, "repeat")
+	length := flag.Int("n", 80, "length")
 	every := flag.Duration("e", time.Second, "print a line every tick")
 	flag.Parse()
 
@@ -21,33 +23,45 @@ func main() {
 	}
 	defer r.Close()
 
-	if err := Forever(r, *repeat, *length, *every); err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
+	var split bufio.SplitFunc
+	if *bin {
+		split = scanBytes(*length)
+	} else {
+		split = scanLines(*length)
+	}
+	for i := 0; *repeat <= 0 || i < *repeat; i++ {
+		if err := Forever(r, split, *bin, *every); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
+		if _, err := r.Seek(0, io.SeekStart); err != nil {
+			fmt.Fprintln(os.Stderr, err)
+			os.Exit(1)
+		}
 	}
 }
 
-func Forever(r io.ReadSeeker, repeat, length int, every time.Duration) error {
+func Forever(r io.ReadSeeker, split bufio.SplitFunc, bin bool, every time.Duration) error {
 	tick := time.Tick(every)
-	for i := 0; repeat <= 0 || i < repeat; i++ {
-		s := bufio.NewScanner(r)
-		if length > 0 {
-			s.Split(scanBytes(length))
+	s := bufio.NewScanner(r)
+	s.Split(split)
+
+	var bs []byte
+	for s.Scan() {
+		if bin {
+			ds := s.Bytes()
+			xs := make([]byte, hex.EncodedLen(len(ds)))
+			hex.Encode(xs, ds)
+			bs = xs
+		} else {
+			bs = s.Bytes()
 		}
-		for s.Scan() {
-			if _, err := os.Stdout.Write(append(s.Bytes(), '\n')); err != nil {
-				return err
-			}
-			<-tick
-		}
-		if err := s.Err(); err != nil {
+		if _, err := os.Stdout.Write(append(bs, '\n')); err != nil {
 			return err
 		}
-		if _, err := r.Seek(0, io.SeekStart); err != nil {
-			return err
-		}
+		<-tick
 	}
-	return nil
+	return s.Err()
 }
 
 const (
@@ -56,7 +70,26 @@ const (
 )
 
 func scanBytes(length int) bufio.SplitFunc {
-	split := func(bs []byte, ateof bool) (int, []byte, error) {
+	if length <= 0 {
+		length = 16
+	}
+	return func(bs []byte, ateof bool) (int, []byte, error) {
+		if ateof {
+			return len(bs), bs, bufio.ErrFinalToken
+		}
+		if len(bs) < length {
+			return 0, nil, nil
+		}
+		xs := make([]byte, length)
+		return copy(xs, bs), xs, nil
+	}
+}
+
+func scanLines(length int) bufio.SplitFunc {
+	if length <= 0 {
+		return bufio.ScanLines
+	}
+	return func(bs []byte, ateof bool) (int, []byte, error) {
 		if ateof {
 			return len(bs), bs, bufio.ErrFinalToken
 		}
@@ -81,5 +114,4 @@ func scanBytes(length int) bufio.SplitFunc {
 		xs := make([]byte, j)
 		return copy(xs, bs), xs, nil
 	}
-	return split
 }
