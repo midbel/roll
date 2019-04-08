@@ -1,50 +1,13 @@
 package roll
 
 import (
-	"archive/tar"
 	"fmt"
 	"io"
 	"log"
 	"os"
 	"sync"
 	"time"
-
-	"github.com/midbel/tape"
-	"github.com/midbel/tape/ar"
-	"github.com/midbel/tape/cpio"
 )
-
-type Header struct {
-	File    string
-	ModTime time.Time
-	Owner   int
-	Group   int
-	Mode    int64
-}
-
-func (h Header) isZero() bool {
-	return h.File == "" && h.ModTime.IsZero()
-}
-
-func (h Header) Tar() tar.Header {
-	return tar.Header{
-		Name:    h.File,
-		ModTime: h.ModTime,
-		Mode:    h.Mode,
-		Uid:     h.Owner,
-		Gid:     h.Group,
-	}
-}
-
-func (h Header) Tape() tape.Header {
-	return tape.Header{
-		Filename: h.File,
-		ModTime:  h.ModTime,
-		Uid:      int64(h.Owner),
-		Gid:      int64(h.Group),
-		Mode:     h.Mode,
-	}
-}
 
 type Roller struct {
 	writer  io.WriteCloser
@@ -64,10 +27,7 @@ type Roller struct {
 	delay     time.Duration
 }
 
-var (
-	sentinel = struct{}{}
-	zero     = Header{}
-)
+var sentinel = struct{}{}
 
 type NextFunc func(int, time.Time) (io.WriteCloser, []io.Closer, error)
 
@@ -124,37 +84,26 @@ func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
 	return &r, nil
 }
 
-func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
+type WriteFunc func(io.Writer) error
+
+func noop(w io.Writer) error { return nil }
+
+func (r *Roller) WriteData(bs []byte, before, after WriteFunc) (int, error) {
+	if before == nil {
+		before = noop
+	}
+	if after == nil {
+		after = noop
+	}
+
 	r.acquire()
 	defer r.release()
 
 	if err := r.openNext(); err != nil {
 		return 0, err
 	}
-	if len(bs) == 0 {
-		return 0, nil
-	}
-
-	if !h.isZero() {
-		var err error
-		switch w := r.writer.(type) {
-		case *tar.Writer:
-			hdr := h.Tar()
-			hdr.Size = int64(len(bs))
-			err = w.WriteHeader(&hdr)
-		case *cpio.Writer:
-			hdr := h.Tape()
-			hdr.Length = int64(len(bs))
-			err = w.WriteHeader(&hdr)
-		case *ar.Writer:
-			hdr := h.Tape()
-			hdr.Length = int64(len(bs))
-			err = w.WriteHeader(&hdr)
-		default:
-		}
-		if err != nil {
-			return 0, err
-		}
+	if err := before(r.writer); err != nil {
+		return 0, err
 	}
 	n, err := r.writer.Write(bs)
 	if err == nil {
@@ -165,11 +114,14 @@ func (r *Roller) WriteData(h Header, bs []byte) (int, error) {
 			}
 		}()
 	}
+	if e := after(r.writer); err == nil && e != nil {
+		err = e
+	}
 	return n, err
 }
 
 func (r *Roller) Write(bs []byte) (int, error) {
-	return r.WriteData(zero, bs)
+	return r.WriteData(bs, noop, noop)
 }
 
 func (r *Roller) Close() error {

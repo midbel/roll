@@ -41,18 +41,21 @@ func main() {
 		if i.IsDir() {
 			return nil
 		}
-		h := roll.Header{
-			File:    p,
-			ModTime: i.ModTime(),
-			Mode:    int64(i.Mode()),
-			Owner:   *uid,
-			Group:   *gid,
-		}
 		bs, err := ioutil.ReadFile(p)
 		if err != nil {
 			return err
 		}
-		_, err = r.WriteData(h, bs)
+		_, err = r.WriteData(bs, func(w io.Writer) error {
+			var err error
+			if w, ok := w.(*tar.Writer); ok {
+				h, err := FileInfoHeader(p, i, len(bs), *uid, *gid)
+				if err != nil {
+					return err
+				}
+				err = w.WriteHeader(h)
+			}
+			return err
+		}, nil)
 		return err
 	})
 	if e := r.Close(); err == nil && e != nil {
@@ -62,6 +65,19 @@ func main() {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+}
+
+func FileInfoHeader(p string, i os.FileInfo, siz, uid, gid int) (*tar.Header, error) {
+	h, err := tar.FileInfoHeader(i, "")
+	if err != nil {
+		return nil, err
+	}
+	h.Name = p
+	h.Size = int64(siz)
+	h.Gid = gid
+	h.Uid = uid
+
+	return h, nil
 }
 
 func open(base, prefix string, mini bool) (roll.NextFunc, error) {
