@@ -15,17 +15,21 @@ type Roller struct {
 	last   int
 	once   sync.Once
 
-	done    chan struct{}
-	sema    chan struct{}
-	written chan int
-	roll    chan time.Time
-	reset   chan time.Time
+	done      chan struct{}
+	sema      chan struct{}
+	written   chan int
+	roll      chan time.Time
+	reset     chan time.Time
+	timeout   chan time.Time
+	interval  chan time.Time
+	threshold chan time.Time
+	delay     time.Duration
 
-	timeout  time.Duration
-	timer    *time.Timer
-	ticker   *time.Ticker
-	maxSize  int
-	maxCount int
+	// timeout  time.Duration
+	// timer    *time.Timer
+	// ticker   *time.Ticker
+	// maxSize  int
+	// maxCount int
 }
 
 var sentinel = struct{}{}
@@ -37,7 +41,9 @@ func WithTimeout(every time.Duration) func(*Roller) {
 		if every <= 0 {
 			return
 		}
-		r.timer, r.timeout = time.NewTimer(every), every
+		r.delay = every
+		r.timeout = make(chan time.Time)
+		go r.runWithTime(r.delay, r.timeout)
 	}
 }
 
@@ -46,24 +52,26 @@ func WithInterval(every time.Duration) func(*Roller) {
 		if every <= 0 {
 			return
 		}
-		r.ticker = time.NewTicker(every)
+		r.interval = make(chan time.Time)
+		go r.runWithTime(every, r.interval)
 	}
 }
 
 func WithThreshold(size, count int) func(*Roller) {
 	return func(r *Roller) {
-		r.maxSize, r.maxCount = size, count
+		r.threshold = make(chan time.Time)
+		r.written = make(chan int)
+		go r.runWithThreshold(size, count)
 	}
 }
 
 func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
 	r := Roller{
-		open:    next,
-		written: make(chan int),
-		roll:    make(chan time.Time, 1),
-		reset:   make(chan time.Time, 1),
-		sema:    make(chan struct{}, 1),
-		done:    make(chan struct{}),
+		open:  next,
+		roll:  make(chan time.Time, 1),
+		reset: make(chan time.Time, 1),
+		sema:  make(chan struct{}, 1),
+		done:  make(chan struct{}),
 	}
 	for _, o := range options {
 		o(&r)
@@ -98,7 +106,10 @@ func (r *Roller) Write(bs []byte) (int, error) {
 	n, err := r.writer.Write(bs)
 	if err == nil {
 		go func() {
-			r.written <- n
+			select {
+			case r.written <- n:
+			default:
+			}
 		}()
 	}
 	return n, err
@@ -124,65 +135,6 @@ func (r *Roller) Rotate() {
 	r.reset <- time.Now()
 }
 
-func (r *Roller) run() {
-	var interval, timeout <-chan time.Time
-	if r.ticker != nil {
-		defer r.ticker.Stop()
-		interval = r.ticker.C
-	}
-	if r.timer != nil {
-		defer r.timer.Stop()
-		timeout = r.timer.C
-	}
-	logger := log.New(os.Stdout, "[rotate] ", 0)
-
-	var written, count int
-	for {
-		var (
-			now     time.Time
-			expired bool
-			reset   bool
-		)
-		select {
-		case <-r.done:
-			return
-		case n := <-timeout:
-			expired = true
-			logger.Printf("timeout rotation @%s", n.Format("2006-01-02 15:04:05"))
-		case n := <-interval:
-			now, reset = n, true
-			logger.Printf("automatic rotation @%s", n.Format("2006-01-02 15:04:05"))
-		case n := <-r.reset:
-			now, reset = n, true
-		case n := <-r.written:
-			if n > 0 {
-				count++
-				written += n
-			}
-			if (r.maxCount > 0 && count >= r.maxCount) || (r.maxSize > 0 && written > r.maxSize) {
-				now = time.Now()
-				logger.Printf("threshold rotation @%s (%d - %d)", now.Format("2006-01-02 15:04:05"), written, count)
-			}
-		}
-		if !now.IsZero() || expired {
-			if written > 0 || reset {
-				select {
-				case r.roll <- now:
-				default:
-					<-r.roll
-					r.roll <- now
-				}
-
-				r.closeWriter(r.writer)
-			}
-			written, count = 0, 0
-		}
-		if r.timeout > 0 {
-			r.timer.Reset(r.timeout)
-		}
-	}
-}
-
 func (r *Roller) closeWriter(old io.Closer) error {
 	if old == nil {
 		return nil
@@ -193,6 +145,71 @@ func (r *Roller) closeWriter(old io.Closer) error {
 		f.Flush()
 	}
 	return old.Close()
+}
+
+func (r *Roller) run() {
+	logger := log.New(os.Stdout, "[rotate] ", 0)
+
+	var last time.Time
+	for {
+		var now time.Time
+		select {
+		case n := <-r.timeout:
+			if delta := n.Sub(last); !last.IsZero() && delta >= r.delay {
+				logger.Printf("timeout rotation @%s (%s)", n.Format("2006-01-02 15:04:05"), delta)
+				now, last = n, time.Time{}
+			}
+		case n := <-r.interval:
+			logger.Printf("automatic rotation @%s", n.Format("2006-01-02 15:04:05"))
+			now = n
+		case n := <-r.threshold:
+			logger.Printf("threshold rotation @%s", n.Format("2006-01-02 15:04:05"))
+			now, last = n, n
+		case n := <-r.reset:
+			logger.Printf("manual rotation @%s", n.Format("2006-01-02 15:04:05"))
+			now = n
+		}
+		if !now.IsZero() {
+			select {
+			case r.roll <- now:
+			default:
+				<-r.roll
+				r.roll <- now
+			}
+
+			r.closeWriter(r.writer)
+		}
+	}
+}
+
+func (r *Roller) runWithThreshold(size, count int) {
+	var written, limit int
+	for {
+		select {
+		case n := <-r.written:
+			limit++
+			written += n
+			if (size > 0 && written >= size) || (count > 0 && limit >= count) {
+				r.threshold <- time.Now()
+				limit, written = 0, 0
+			}
+		case <-r.done:
+			return
+		}
+	}
+}
+
+func (r *Roller) runWithTime(d time.Duration, tick chan time.Time) {
+	t := time.NewTicker(d)
+	defer t.Stop()
+	for {
+		select {
+		case <-r.done:
+			return
+		case n := <-t.C:
+			tick <- n
+		}
+	}
 }
 
 func (r *Roller) acquire() { r.sema <- sentinel }
