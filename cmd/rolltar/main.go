@@ -46,15 +46,11 @@ func main() {
 			return err
 		}
 		_, err = r.WriteData(bs, func(w io.Writer) error {
-			var err error
-			if w, ok := w.(*tar.Writer); ok {
-				h, err := FileInfoHeader(p, i, len(bs), *uid, *gid)
-				if err != nil {
-					return err
-				}
-				err = w.WriteHeader(h)
+			h, err := FileInfoHeader(p, i, len(bs), *uid, *gid)
+			if err != nil {
+				return err
 			}
-			return err
+			return w.(*tar.Writer).WriteHeader(h)
 		}, nil)
 		return err
 	})
