@@ -79,7 +79,7 @@ func open(base, dir, mode, prefix, ext string) (roll.NextFunc, error) {
 	if err := os.MkdirAll(base, 0755); err != nil {
 		return nil, err
 	}
-	next := func(_ int, w time.Time) (io.WriteCloser, error) {
+	next := func(_ int, w time.Time) (io.WriteCloser, []io.Closer, error) {
 		datadir := base
 		switch dir {
 		case "time":
@@ -103,7 +103,9 @@ func open(base, dir, mode, prefix, ext string) (roll.NextFunc, error) {
 		}
 		n := fmt.Sprintf("%s_%s.%s", prefix, suffix, ext)
 		log.Println("open file", filepath.Join(datadir, n))
-		return os.OpenFile(filepath.Join(datadir, n), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+		wc, err := os.OpenFile(filepath.Join(datadir, n), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+
+		return wc, nil, err
 	}
 	return next, nil
 }
