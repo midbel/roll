@@ -50,6 +50,11 @@ func Forever(r io.ReadSeeker, repeat, length int, every time.Duration) error {
 	return nil
 }
 
+const (
+	newline = '\n'
+	space   = ' '
+)
+
 func scanBytes(length int) bufio.SplitFunc {
 	split := func(bs []byte, ateof bool) (int, []byte, error) {
 		if ateof {
@@ -58,23 +63,21 @@ func scanBytes(length int) bufio.SplitFunc {
 		if len(bs) < length {
 			return 0, nil, nil
 		}
-		if bs[0] == '\n' {
+		if bs[0] == newline {
 			return 1, nil, nil
 		}
-		j := length
-		for i := j; i >= 0; i-- {
-			if bs[i] == ' ' {
-				j++
-				for i := j; i >= 0; i-- {
-					if bs[i] == '\n' {
-						j = i
-						break
-					}
-				}
+		var j int
+		for i := 0; i < length; i++ {
+			if bs[i] == newline {
+				j = i
 				break
 			}
-			j--
+			if bs[i] == space {
+				j = i
+			}
 		}
+
+		j++
 		xs := make([]byte, j)
 		return copy(xs, bs), xs, nil
 	}
