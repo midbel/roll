@@ -22,6 +22,7 @@ func main() {
 	datadir := flag.String("d", "", "working directory")
 	prefix := flag.String("p", "roll", "archive prefix")
 	mini := flag.Bool("z", false, "compress archive")
+	remove := flag.Bool("r", false, "remove file added to archive")
 	flag.Parse()
 
 	next, err := open(*datadir, *prefix, *mini)
@@ -35,10 +36,7 @@ func main() {
 		os.Exit(2)
 	}
 	err = filepath.Walk(flag.Arg(0), func(p string, i os.FileInfo, err error) error {
-		if err != nil {
-			return err
-		}
-		if i.IsDir() {
+		if err != nil || i.IsDir() {
 			return nil
 		}
 		bs, err := ioutil.ReadFile(p)
@@ -52,6 +50,9 @@ func main() {
 			}
 			return w.(*tar.Writer).WriteHeader(h)
 		}, nil)
+		if err == nil && *remove {
+			err = os.Remove(p)
+		}
 		return err
 	})
 	if e := r.Close(); err == nil && e != nil {
