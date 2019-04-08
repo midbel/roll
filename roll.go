@@ -309,5 +309,4 @@ func drainRoll(roll <-chan time.Time, n time.Time) time.Time {
 			return n
 		}
 	}
-	return n
 }
