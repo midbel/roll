@@ -17,33 +17,33 @@ import (
 const (
 	DefaultInterval = time.Minute * 5
 	DefaultTimeout  = time.Minute
+	DefaultName = "roll.log"
 )
 
 func main() {
-	dir := flag.String("y", "", "directory structure")
-	mode := flag.String("m", "", "mode")
-	prefix := flag.String("p", "roll", "prefix")
-	ext := flag.String("e", "txt", "extension")
+	var h History
+
+	flag.StringVar(&h.Dir, "y", "", "directory structure")
+	flag.StringVar(&h.Mode, "m", "", "mode")
+	flag.StringVar(&h.Basename, "b", DefaultName, "prefix")
+	flag.IntVar(&h.Keep, "k", 7, "keep K files before deleting")
+	flag.IntVar(&h.Mini, "n", 5, "compress N last files")
+	flag.BoolVar(&h.Empty, "e", false, "keep empty files")
 	tee := flag.Bool("tee", false, "copy stdin to stdout")
 	maxCount := flag.Int("c", 0, "count threshold")
 	maxSize := flag.Int("s", 0, "size threshold")
-	timeout := flag.Duration("t", 0, "timeout")
-	interval := flag.Duration("d", 0, "interval")
+	timeout := flag.Duration("t", DefaultInterval, "timeout")
+	interval := flag.Duration("d", DefaultTimeout, "interval")
 	flag.Parse()
-
-	next, err := open(flag.Arg(0), *dir, *mode, *prefix, *ext)
-	if err != nil {
-		fmt.Fprintln(os.Stderr, err)
-		os.Exit(1)
-	}
 
 	options := []func(*roll.Roller){
 		roll.WithThreshold(*maxSize, *maxCount),
 		roll.WithInterval(*interval),
 		roll.WithTimeout(*timeout),
 	}
+	h.Datadir = flag.Arg(0)
 
-	w, err := roll.Roll(next, options...)
+	w, err := roll.Roll(h.Open, options...)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
@@ -75,37 +75,50 @@ func main() {
 	w.Close()
 }
 
-func open(base, dir, mode, prefix, ext string) (roll.NextFunc, error) {
-	if err := os.MkdirAll(base, 0755); err != nil {
-		return nil, err
-	}
-	next := func(_ int, w time.Time) (io.WriteCloser, []io.Closer, error) {
-		datadir := base
-		switch dir {
-		case "time":
-			y := fmt.Sprintf("%04d", w.Year())
-			d := fmt.Sprintf("%03d", w.YearDay())
-			h := fmt.Sprintf("%02d", w.Hour())
+type History struct {
+	Keep  int
+	Mini  int
+	Empty bool
 
-			datadir = filepath.Join(datadir, y, d, h)
-			if err := os.MkdirAll(datadir, 0755); err != nil {
-				return nil, err
-			}
-		default:
+	Datadir  string
+	Mode     string // configure suffix of files
+	Dir      string // configure directory layout where files will be written
+	Basename string // basename of files created
+}
+
+func (h *History) Open(i int, w time.Time) (io.WriteCloser, []io.Closer, error) {
+	datadir := h.Datadir
+	switch h.Dir {
+	case "time":
+		y := fmt.Sprintf("%04d", w.Year())
+		d := fmt.Sprintf("%03d", w.YearDay())
+		h := fmt.Sprintf("%02d", w.Hour())
+
+		datadir = filepath.Join(datadir, y, d, h)
+		if err := os.MkdirAll(datadir, 0755); err != nil {
+			return nil, nil, err
 		}
-
-		var suffix string
-		switch mode {
-		case "hms":
-			suffix = w.Format("150405")
-		default:
-			suffix = fmt.Sprint(w.Unix())
-		}
-		n := fmt.Sprintf("%s_%s.%s", prefix, suffix, ext)
-		log.Println("open file", filepath.Join(datadir, n))
-		wc, err := os.OpenFile(filepath.Join(datadir, n), os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
-
-		return wc, nil, err
+	default:
 	}
-	return next, nil
+	var suffix string
+	switch h.Mode {
+	case "version":
+		i--
+		if h.Keep > 0 {
+			suffix = fmt.Sprintf("%06d", i%h.Keep)
+		} else {
+			suffix = fmt.Sprintf(".%06d", i)
+		}
+	case "hms":
+		suffix = "-" + w.Format("150405")
+	default:
+		suffix = "-" + fmt.Sprint(w.Unix())
+	}
+	file := filepath.Join(datadir, h.Basename+suffix)
+	wc, err := os.OpenFile(file, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0644)
+	if err == nil {
+		log.Println("open file", file)
+	}
+
+	return wc, nil, err
 }

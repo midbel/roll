@@ -31,6 +31,10 @@ var sentinel = struct{}{}
 
 type NextFunc func(int, time.Time) (io.WriteCloser, []io.Closer, error)
 
+type WriteFunc func(io.Writer) error
+
+func noop(w io.Writer) error { return nil }
+
 func WithTimeout(every time.Duration) func(*Roller) {
 	return func(r *Roller) {
 		if every <= 0 {
@@ -54,6 +58,9 @@ func WithInterval(every time.Duration) func(*Roller) {
 
 func WithThreshold(size, count int) func(*Roller) {
 	return func(r *Roller) {
+		if size == 0 && count == 0 {
+			return
+		}
 		r.threshold = make(chan time.Time)
 		r.written = make(chan int)
 		go r.runWithThreshold(size, count)
@@ -83,10 +90,6 @@ func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
 	}
 	return &r, nil
 }
-
-type WriteFunc func(io.Writer) error
-
-func noop(w io.Writer) error { return nil }
 
 func (r *Roller) WriteData(bs []byte, before, after WriteFunc) (int, error) {
 	if before == nil {
@@ -152,7 +155,7 @@ func (r *Roller) openNext() error {
 			n = time.Now()
 		}
 		r.last++
-		w, cs, err := r.open(r.last, n)
+		w, cs, err := r.open(r.last+1, n)
 		if err != nil {
 			return err
 		}
