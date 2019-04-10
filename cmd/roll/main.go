@@ -36,7 +36,7 @@ func main() {
 	interval := flag.Duration("d", DefaultTimeout, "interval")
 	flag.Parse()
 
-	options := []func(*roll.Roller){
+	options := []roll.Option{
 		roll.WithThreshold(*maxSize, *maxCount),
 		roll.WithInterval(*interval),
 		roll.WithTimeout(*timeout),

@@ -9,6 +9,8 @@ import (
 	"time"
 )
 
+type Option func(*Roller)
+
 type Roller struct {
 	writer  io.WriteCloser
 	closers []io.Closer
@@ -35,7 +37,7 @@ type WriteFunc func(io.Writer) error
 
 func noop(w io.Writer) error { return nil }
 
-func WithTimeout(every time.Duration) func(*Roller) {
+func WithTimeout(every time.Duration) Option {
 	return func(r *Roller) {
 		if every <= 0 {
 			return
@@ -46,7 +48,7 @@ func WithTimeout(every time.Duration) func(*Roller) {
 	}
 }
 
-func WithInterval(every time.Duration) func(*Roller) {
+func WithInterval(every time.Duration) Option {
 	return func(r *Roller) {
 		if every <= 0 {
 			return
@@ -56,7 +58,7 @@ func WithInterval(every time.Duration) func(*Roller) {
 	}
 }
 
-func WithThreshold(size, count int) func(*Roller) {
+func WithThreshold(size, count int) Option {
 	return func(r *Roller) {
 		if size == 0 && count == 0 {
 			return
@@ -67,7 +69,7 @@ func WithThreshold(size, count int) func(*Roller) {
 	}
 }
 
-func Roll(next NextFunc, options ...func(*Roller)) (*Roller, error) {
+func Roll(next NextFunc, options ...Option) (*Roller, error) {
 	r := Roller{
 		open:  next,
 		roll:  make(chan time.Time, 1),
