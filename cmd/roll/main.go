@@ -17,7 +17,7 @@ import (
 const (
 	DefaultInterval = time.Minute * 5
 	DefaultTimeout  = time.Minute
-	DefaultName = "roll.log"
+	DefaultName     = "roll.log"
 )
 
 func main() {
