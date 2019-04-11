@@ -229,7 +229,9 @@ func (r *Roller) run() {
 				r.roll <- now
 			}
 
-			r.closeWriter(r.writer, r.closers)
+			cs := make([]io.Closer, len(r.closers))
+			copy(cs, r.closers)
+			r.closeWriter(r.writer, cs)
 		}
 	}
 }
